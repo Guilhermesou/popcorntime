@@ -1,6 +1,8 @@
 // Taken from: https://github.com/gitbutlerapp/gitbutler
 
-use std::{fs, net::Ipv4Addr, path::Path, time::Duration};
+use std::{fs, path::Path};
+#[cfg(debug_assertions)]
+use std::{net::Ipv4Addr, time::Duration};
 use tauri::{AppHandle, Manager};
 use tracing::{instrument, metadata::LevelFilter, subscriber::set_global_default};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
@@ -43,25 +45,31 @@ pub fn init(app_handle: &AppHandle) {
     .parse()
     .unwrap_or(LevelFilter::INFO);
 
-  let subscriber = tracing_subscriber::registry()
-    .with(
-      // subscriber for https://github.com/tokio-rs/console
-      console_subscriber::ConsoleLayer::builder()
-        .server_addr((Ipv4Addr::LOCALHOST, 6669))
-        .retention(Duration::from_secs(3600)) // 1h
-        .publish_interval(Duration::from_secs(1))
-        .recording_path(logs_dir.join("PopcornTime.console.log"))
-        .spawn(),
-    )
-    .with(
-      // subscriber that writes spans to a file
-      tracing_subscriber::fmt::layer()
-        .event_format(format_for_humans.clone())
-        .with_ansi(false)
-        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
-        .with_writer(file_writer)
-        .with_filter(log_level_filter),
-    );
+  // subscriber for https://github.com/tokio-rs/console
+  // Only enabled in debug builds: it opens an unauthenticated gRPC server on
+  // localhost:6669 exposing task/span data, records every runtime event to disk
+  // and forces trace-level instrumentation, which costs CPU in production.
+  #[cfg(debug_assertions)]
+  let console_layer = Some(
+    console_subscriber::ConsoleLayer::builder()
+      .server_addr((Ipv4Addr::LOCALHOST, 6669))
+      .retention(Duration::from_secs(3600)) // 1h
+      .publish_interval(Duration::from_secs(1))
+      .recording_path(logs_dir.join("PopcornTime.console.log"))
+      .spawn(),
+  );
+  #[cfg(not(debug_assertions))]
+  let console_layer: Option<tracing_subscriber::layer::Identity> = None;
+
+  let subscriber = tracing_subscriber::registry().with(console_layer).with(
+    // subscriber that writes spans to a file
+    tracing_subscriber::fmt::layer()
+      .event_format(format_for_humans.clone())
+      .with_ansi(false)
+      .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
+      .with_writer(file_writer)
+      .with_filter(log_level_filter),
+  );
 
   set_global_default(
     subscriber.with(

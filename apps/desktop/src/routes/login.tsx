@@ -16,6 +16,7 @@ export function LoginRoute() {
 	}
 
 	useEffect(() => {
+		let disposed = false;
 		let unlisten: (() => void) | undefined;
 
 		on.sessionServerReady
@@ -23,10 +24,15 @@ export function LoginRoute() {
 				openUrl(event.payload.authorization_url);
 			})
 			.then(fn => {
-				unlisten = fn;
+				// the component may have unmounted before `listen` resolved
+				if (disposed) fn();
+				else unlisten = fn;
 			});
 
-		return unlisten;
+		return () => {
+			disposed = true;
+			unlisten?.();
+		};
 	}, [on.sessionServerReady]);
 
 	useEffect(() => {

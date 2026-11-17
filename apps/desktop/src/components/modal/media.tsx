@@ -464,7 +464,9 @@ export function MediaDialog() {
 
 	return (
 		<Dialog open={isOpen} onOpenChange={closeMedia} modal>
-			<DialogContent className="z-[300] h-full w-full max-w-2xl border-0 p-0 outline-none md:max-h-[90vh] lg:max-w-4xl">
+			{/* centered with inset + auto margins instead of translate(-50%,-50%),
+			    which some WebKit versions ignore with Tailwind v4 @property vars */}
+			<DialogContent className="inset-0 z-[300] m-auto h-full w-full max-w-2xl translate-x-0 translate-y-0 border-0 p-0 outline-none md:max-h-[90vh] lg:max-w-4xl">
 				<DialogTitle hidden></DialogTitle>
 				<DialogDescription hidden></DialogDescription>
 				<div

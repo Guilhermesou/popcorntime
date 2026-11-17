@@ -40,7 +40,13 @@ fn main() {
         .formatter(specta_typescript::formatter::biome)
         // year and IDs are safe for number
         .bigint(specta_typescript::BigIntExportBehavior::Number),
-      "./apps/desktop/src/tauri/types.ts",
+      // absolute path: `tauri dev` runs cargo from the crate directory, so a
+      // relative path would write inside the watched crate and cause an
+      // endless rebuild loop
+      concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../apps/desktop/src/tauri/types.ts"
+      ),
     )
     .expect("Failed to export typescript bindings");
 

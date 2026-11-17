@@ -1,10 +1,10 @@
-use crate::server::run_local_oauth_server;
+use crate::server::{CallbackResult, run_local_oauth_server};
 use anyhow::Result;
 use oauth2::basic::{BasicClient, BasicTokenType};
 use oauth2::{AuthUrl, ClientId, RedirectUrl, TokenUrl};
 use oauth2::{
-  AuthorizationCode, CsrfToken, EmptyExtraTokenFields, PkceCodeChallenge, RefreshToken, Scope,
-  StandardTokenResponse, TokenResponse, reqwest,
+  CsrfToken, EmptyExtraTokenFields, PkceCodeChallenge, RefreshToken, Scope, StandardTokenResponse,
+  TokenResponse, reqwest,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -88,6 +88,9 @@ impl AuthorizationBroker {
     let reqwest_client = reqwest::ClientBuilder::new()
       // following redirects opens the client up to SSRF vulnerabilities
       .redirect(reqwest::redirect::Policy::none())
+      .https_only(!cfg!(debug_assertions))
+      .connect_timeout(Duration::from_secs(5))
+      .timeout(Duration::from_secs(15))
       .build()?;
 
     let client = BasicClient::new(ClientId::new(client_id.to_string()))
@@ -123,12 +126,17 @@ impl AuthorizationBroker {
     send_event: impl Fn(AuthorizationBrokerResponse) -> Result<()> + Send + Sync + 'static,
   ) -> Result<()> {
     let server_running = self.server_running.clone();
-    if server_running.load(Ordering::SeqCst) {
+    // atomically claim the server slot; if a login is already pending, just
+    // re-open the browser on the existing local server
+    if server_running
+      .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+      .is_err()
+    {
       return on_ready(AuthorizationBrokerEvent::default());
     }
 
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
-    let (tx, mut rx) = mpsc::channel::<(AuthorizationCode, CsrfToken)>(1);
+    let (tx, mut rx) = mpsc::channel::<CallbackResult>(1);
     let http_client = self.reqwest_client.clone();
     let oauth2_client = self.oauth2_client.clone();
     let (authorize_url, csrf_state) = oauth2_client
@@ -145,12 +153,11 @@ impl AuthorizationBroker {
       let send_event = Arc::clone(&send_event);
       async move {
         match timeout(Duration::from_secs(THREAD_TIMEOUT), rx.recv()).await {
-          Ok(Some((code, state))) => {
-            if state.secret() != &csrf_state {
-              tracing::error!("CSRF state mismatch, rejecting request.");
-              return;
-            }
-
+          Ok(Some(Err(error))) => {
+            tracing::warn!("Authorization was not granted: {error}");
+          }
+          // the CSRF state has already been validated by the local server
+          Ok(Some(Ok(code))) => {
             match oauth2_client
               .exchange_code(code)
               .set_pkce_verifier(pkce_verifier) // Now safely moved
@@ -178,14 +185,26 @@ impl AuthorizationBroker {
     });
 
     tauri::async_runtime::spawn(async move {
+      // emit once the server task is about to bind; the browser only hits
+      // the server after the user interacts, so this ordering is safe
       if let Err(err) = on_ready(AuthorizationBrokerEvent::default()) {
         tracing::error!("Failed to send authorize url: {:?}", err);
+        server_running.store(false, Ordering::SeqCst);
         return;
       }
 
-      let result = run_local_oauth_server(authorize_url, PORT, tx).await;
-      if result.is_err() {
-        tracing::warn!("Authorization handler timed out after 5 minutes.");
+      // blocks until a valid callback is received or the timeout elapses,
+      // then releases the port so a new login can start cleanly
+      if let Err(err) = run_local_oauth_server(
+        authorize_url,
+        csrf_state,
+        PORT,
+        tx,
+        Duration::from_secs(THREAD_TIMEOUT),
+      )
+      .await
+      {
+        tracing::error!("Local OAuth server failed: {:?}", err);
       }
 
       server_running.store(false, Ordering::SeqCst);

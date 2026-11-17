@@ -66,3 +66,10 @@ popcorntime-error = { path = "crates/popcorntime-error" }
 popcorntime-graphql-client = { path = "crates/popcorntime-graphql-client" }
 popcorntime-graphql-macros = { path = "crates/popcorntime-graphql-client/macros" }
 popcorntime-tauri-splash = { path = "crates/popcorntime-tauri-splash" }
+
+[profile.release]
+# smaller and faster binaries for distribution
+codegen-units = 1
+lto = "thin"
+opt-level = 3
+strip = "debuginfo"
